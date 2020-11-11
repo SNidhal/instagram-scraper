@@ -19,6 +19,11 @@ import textwrap
 import time
 import xml.etree.ElementTree as ET
 import moviepy.editor as mpe
+from selenium import webdriver
+from selenium.webdriver import ActionChains
+from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.chrome.options import Options
+import time
 
 try:
     from urllib.parse import urlparse
@@ -44,8 +49,10 @@ warnings.filterwarnings('ignore')
 
 input_lock = threading.RLock()
 
+
 class LockedStream(object):
     file = None
+
     def __init__(self, file):
         self.file = file
 
@@ -56,14 +63,17 @@ class LockedStream(object):
     def flush(self):
         return getattr(self.file, 'flush', lambda: None)()
 
+
 def allowed_gai_family():
     family = socket.AF_INET  # force IPv4
     return family
+
 
 original_stdout, original_stderr = sys.stdout, sys.stderr
 sys.stdout, sys.stderr = map(LockedStream, (sys.stdout, sys.stderr))
 # Force using IPv4 connections, when the machine where this code runs uses IPv6
 urllib3_connection.allowed_gai_family = allowed_gai_family
+
 
 def threaded_input(prompt):
     with input_lock:
@@ -78,10 +88,127 @@ def threaded_input(prompt):
             original_stdout.flush()
             return sys.stdin.readline()
 
+
 input = threaded_input
+
 
 class PartialContentException(Exception):
     pass
+
+
+class SeleniumInstagramScraper:
+
+    def __init__(self, post_url):
+        self.post_url = post_url
+        self.comments = []
+        chrome_options = webdriver.ChromeOptions()
+        chrome_options.add_argument("--headless --window-size=1920,1080")
+        self.chrome = webdriver.Chrome(executable_path='D:/chromedriver.exe', chrome_options=chrome_options)
+
+    def scrape_comments(self):
+        browser = self.chrome.get(self.post_url)
+        content = self.chrome.page_source
+
+        while self.check_exists_by_xpath("//button[@class='dCJp8 afkep']"):
+            element = self.chrome.find_element_by_class_name("XQXOT").find_element_by_xpath(
+                "//button[@class='dCJp8 afkep']")
+            element.click()
+            time.sleep(2)
+
+        comments = self.chrome.find_element_by_class_name("XQXOT").find_elements_by_class_name("Mr508")
+        for comment in comments:
+            d = comment.find_element_by_class_name("ZyFrc").find_element_by_tag_name("li").find_element_by_class_name(
+                "P9YgZ").find_element_by_tag_name("div")
+            d = d.find_element_by_class_name("C4VMK")
+            poster = d.find_element_by_tag_name("h3").find_element_by_tag_name("a").text
+
+            try:
+                replies = comment.find_element_by_class_name("EizgU").text
+            except NoSuchElementException:
+                replies = "(0)"
+
+            if replies == "Hide replies":
+                replies = "(0)"
+
+            replies = int(replies[replies.find("(") + 1:replies.find(")")].replace(',', ''))
+
+            rlps = []
+
+            if replies != 0:
+                while comment.find_element_by_class_name("EizgU").text != "Hide replies":
+                    element_reply = comment.find_element_by_class_name("EizgU")
+                    element_reply.click()
+                    time.sleep(2)
+                replies_content = comment.find_element_by_class_name("TCSYW").find_elements_by_class_name("P9YgZ")
+                for rlp in replies_content:
+                    name = rlp.find_element_by_class_name("C4VMK").find_element_by_tag_name(
+                        "h3").find_element_by_tag_name("a").text
+                    reply = rlp.find_element_by_class_name("C4VMK").find_element_by_xpath("span").text
+
+                    try:
+                        reply_likes = rlp.find_element_by_class_name("C4VMK").find_element_by_tag_name("button").text
+                    except NoSuchElementException:
+                        reply_likes = "0 like"
+
+                    if reply_likes == "Reply":
+                        reply_likes = "0 like"
+
+                    reply_likes = int(reply_likes.split(" ", 2)[0].replace(',', ''))
+
+                    reply_datetime = rlp.find_element_by_class_name("C4VMK").find_element_by_tag_name("time").get_attribute("datetime")
+
+                    reply_verified = True
+                    try:
+                        rlp.find_element_by_class_name("C4VMK").find_element_by_tag_name("h3").find_element_by_tag_name("span")
+                    except NoSuchElementException:
+                        reply_verified = False
+
+                    rlps.append({
+                        "poster": name,
+                        "reply": reply,
+                        "likes": reply_likes,
+                        "dateTime": reply_datetime,
+                        "verified": reply_verified
+
+                    })
+
+            verified = True
+            try:
+                d.find_element_by_tag_name("h3").find_element_by_tag_name("span")
+            except NoSuchElementException:
+                verified = False
+
+            post = d.find_element_by_xpath("span").text
+            datetime = d.find_element_by_tag_name("time").get_attribute("datetime")
+
+            try:
+                likes = d.find_element_by_tag_name("button").text
+            except NoSuchElementException:
+                likes = "0 like"
+
+            if likes == "Reply":
+                likes = "0 like"
+
+            likes = int(likes.split(" ", 2)[0].replace(',', ''))
+
+            self.comments.append({
+                "poster": poster,
+                "post": post,
+                "datetime": datetime,
+                "likes": likes,
+                "verified": verified,
+                "totalReplies": replies,
+                "replies": rlps
+            })
+
+        return self.comments
+
+    def check_exists_by_xpath(self, xpath):
+        try:
+            self.chrome.find_element_by_class_name("XQXOT").find_element_by_xpath(xpath)
+        except NoSuchElementException:
+            return False
+        return True
 
 class InstagramScraper(object):
     """InstagramScraper scrapes and downloads an instagram user's photos and videos"""
@@ -96,7 +223,7 @@ class InstagramScraper(object):
                             media_types=['image', 'video', 'story-image', 'story-video', 'broadcast'],
                             tag=False, location=False, search_location=False, comments=False,
                             verbose=0, include_location=False, filter=None, proxies={}, no_check_certificate=False,
-                                                        template='{urlname}', log_destination='')
+                            template='{urlname}', log_destination='')
 
         allowed_attr = list(default_attr.keys())
         default_attr.update(kwargs)
@@ -124,7 +251,8 @@ class InstagramScraper(object):
 
         # Set up a logger
         if self.logger is None:
-            self.logger = InstagramScraper.get_logger(level=logging.DEBUG, dest=default_attr.get('log_destination'), verbose=default_attr.get('verbose'))
+            self.logger = InstagramScraper.get_logger(level=logging.DEBUG, dest=default_attr.get('log_destination'),
+                                                      verbose=default_attr.get('verbose'))
 
         self.posts = []
         self.stories = []
@@ -166,21 +294,21 @@ class InstagramScraper(object):
 
     def _retry_prompt(self, url, exception_message):
         """Show prompt and return True: retry, False: ignore, None: abort"""
-        answer = input( 'Repeated error {0}\n(A)bort, (I)gnore, (R)etry or retry (F)orever?'.format(exception_message) )
+        answer = input('Repeated error {0}\n(A)bort, (I)gnore, (R)etry or retry (F)orever?'.format(exception_message))
         if answer:
             answer = answer[0].upper()
             if answer == 'I':
-                self.logger.info( 'The user has chosen to ignore {0}'.format(url) )
+                self.logger.info('The user has chosen to ignore {0}'.format(url))
                 return False
             elif answer == 'R':
                 return True
             elif answer == 'F':
-                self.logger.info( 'The user has chosen to retry forever' )
+                self.logger.info('The user has chosen to retry forever')
                 global MAX_RETRIES
                 MAX_RETRIES = sys.maxsize
                 return True
             else:
-                self.logger.info( 'The user has chosen to abort' )
+                self.logger.info('The user has chosen to abort')
                 return None
 
     def safe_get(self, *args, **kwargs):
@@ -200,7 +328,7 @@ class InstagramScraper(object):
                 response.raise_for_status()
                 content_length = response.headers.get('Content-Length')
                 if content_length is not None and len(response.content) != int(content_length):
-                    #if content_length is None we repeat anyway to get size and be confident
+                    # if content_length is None we repeat anyway to get size and be confident
                     raise PartialContentException('Partial response')
                 return response
             except (KeyboardInterrupt):
@@ -213,7 +341,7 @@ class InstagramScraper(object):
                 if retry < MAX_RETRIES:
                     self.logger.warning('Retry after exception {0} on {1}'.format(repr(e), url))
                     self.sleep(retry_delay)
-                    retry_delay = min( 2 * retry_delay, MAX_RETRY_DELAY )
+                    retry_delay = min(2 * retry_delay, MAX_RETRY_DELAY)
                     retry = retry + 1
                     continue
                 else:
@@ -381,7 +509,6 @@ class InstagramScraper(object):
         id = user['id']
         followings, end_cursor = self.__query_followings(id, end_cursor)
 
-
         if followings:
             while True:
                 for following in followings:
@@ -404,6 +531,11 @@ class InstagramScraper(object):
                     followings.append(node['node']['username'])
                 return followings, end_cursor
         return None, None
+
+    def query_comments_selenium(self, shortcode):
+        post_url = 'https://www.instagram.com/p/' + str(shortcode) + '/'
+        scraper = SeleniumInstagramScraper(post_url)
+        return scraper.scrape_comments()
 
     def query_comments_gen(self, shortcode, end_cursor=''):
         """Generator for comments."""
@@ -454,7 +586,8 @@ class InstagramScraper(object):
             self.logger.debug("Exception in worker thread", exc_info=sys.exc_info())
             raise
 
-    def __scrape_query(self, media_generator, executor=concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)):
+    def __scrape_query(self, media_generator,
+                       executor=concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)):
         """Scrapes the specified value for posted media."""
         self.quit = False
         try:
@@ -471,15 +604,17 @@ class InstagramScraper(object):
                     media_exec = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
                 iter = 0
-                for item in tqdm.tqdm(media_generator(value), desc='Searching {0} for posts'.format(value), unit=" media",
+                for item in tqdm.tqdm(media_generator(value), desc='Searching {0} for posts'.format(value),
+                                      unit=" media",
                                       disable=self.quiet):
 
                     if self.filter_locations:
-                        if item.get("location") is None or self.get_key_from_value(self.filter_locations, item["location"].get("id")) is None:
+                        if item.get("location") is None or self.get_key_from_value(self.filter_locations,
+                                                                                   item["location"].get("id")) is None:
                             continue
                     if ((item['is_video'] is False and 'image' in self.media_types) or \
-                                (item['is_video'] is True and 'video' in self.media_types)
-                        ) and self.is_new_media(item):
+                        (item['is_video'] is True and 'video' in self.media_types)
+                    ) and self.is_new_media(item):
                         future = executor.submit(self.worker_wrapper, self.download, item, dst)
                         future_to_item[future] = item
 
@@ -487,14 +622,14 @@ class InstagramScraper(object):
                         media_exec.submit(self.worker_wrapper, self.__get_location, item)
 
                     if self.comments:
-                        item['edge_media_to_comment']['data'] = list(self.query_comments_gen(item['shortcode']))
+                        item['edge_media_to_comment']['data'] = list(self.query_comments_selenium(item['shortcode']))
 
                     if self.media_metadata or self.comments or self.include_location:
                         if self.latest_stamps_parser and self.initial_scraped_filemtime > self.__get_timestamp(item):
                             pass
                         else:
                             self.posts.append(item)
-                            
+
                     iter = iter + 1
                     if self.maximum != 0 and iter >= self.maximum:
                         break
@@ -643,8 +778,8 @@ class InstagramScraper(object):
                         'Error getting user details for {0}. Please verify that the user exists.'.format(username))
                     continue
                 elif user and user['is_private'] and user['edge_owner_to_timeline_media']['count'] > 0 and not \
-                    user['edge_owner_to_timeline_media']['edges']:
-                        self.logger.info('User {0} is private'.format(username))
+                        user['edge_owner_to_timeline_media']['edges']:
+                    self.logger.info('User {0} is private'.format(username))
 
                 self.rhx_gis = ""
 
@@ -663,7 +798,8 @@ class InstagramScraper(object):
                     # Displays the progress bar of completed downloads. Might not even pop up if all media is downloaded while
                     # the above loop finishes.
                     if future_to_item:
-                        for future in tqdm.tqdm(concurrent.futures.as_completed(future_to_item), total=len(future_to_item),
+                        for future in tqdm.tqdm(concurrent.futures.as_completed(future_to_item),
+                                                total=len(future_to_item),
                                                 desc='Downloading', disable=self.quiet):
                             item = future_to_item[future]
 
@@ -715,10 +851,11 @@ class InstagramScraper(object):
                 self.logger.warning('Failed to get high resolution profile picture for {0}'.format(username))
                 profile_pic_url = user['profile_pic_url_hd']
         else:
-                # If not logged_in take the Low-Resolution profile picture
-                profile_pic_url = user['profile_pic_url_hd']
+            # If not logged_in take the Low-Resolution profile picture
+            profile_pic_url = user['profile_pic_url_hd']
 
-        item = {'urls': [profile_pic_url], 'username': username, 'shortcode':'', 'created_time': 1286323200, '__typename': 'GraphProfilePic'}
+        item = {'urls': [profile_pic_url], 'username': username, 'shortcode': '', 'created_time': 1286323200,
+                '__typename': 'GraphProfilePic'}
 
         if self.latest is False or os.path.isfile(dst + '/' + item['urls'][0].split('/')[-1]) is False:
             for item in tqdm.tqdm([item], desc='Searching {0} for profile pic'.format(username), unit=" images",
@@ -736,7 +873,7 @@ class InstagramScraper(object):
             self.logger.error('Error getting user info for {0}'.format(username))
             return
 
-        self.logger.info( 'Saving metadata general information on {0}.json'.format(username) )
+        self.logger.info('Saving metadata general information on {0}.json'.format(username))
 
         user_info = json.loads(resp)['graphql']['user']
 
@@ -797,7 +934,8 @@ class InstagramScraper(object):
 
             # Downloads the user's broadcasts and sends it to the executor.
             iter = 0
-            for item in tqdm.tqdm(broadcasts, desc='Searching {0} for broadcasts'.format(user['username']), unit=" media",
+            for item in tqdm.tqdm(broadcasts, desc='Searching {0} for broadcasts'.format(user['username']),
+                                  unit=" media",
                                   disable=self.quiet):
                 item['username'] = user['username']
                 future = executor.submit(self.worker_wrapper, self.dowload_broadcast, item, dst)
@@ -825,7 +963,7 @@ class InstagramScraper(object):
                 if 'tags' in item:
                     filtered = any(x in item['tags'] for x in self.filter)
                     if self.has_selected_media_types(item) and self.is_new_media(item) and filtered:
-                        item['username']=username
+                        item['username'] = username
                         future = executor.submit(self.worker_wrapper, self.download, item, dst)
                         future_to_item[future] = item
                 else:
@@ -834,20 +972,20 @@ class InstagramScraper(object):
             # --------------#
             else:
                 if self.has_selected_media_types(item) and self.is_new_media(item):
-                    item['username']=username
+                    item['username'] = username
                     future = executor.submit(self.worker_wrapper, self.download, item, dst)
                     future_to_item[future] = item
 
             if self.include_location:
-                item['username']=username
+                item['username'] = username
                 media_exec.submit(self.worker_wrapper, self.__get_location, item)
 
             if self.comments:
-                item['username']=username
-                item['comments'] = {'data': list(self.query_comments_gen(item['shortcode']))}
+                item['username'] = username
+                item['comments'] = {'data': list(self.query_comments_selenium(item['shortcode']))}
 
             if self.media_metadata or self.comments or self.include_location:
-                item['username']=username
+                item['username'] = username
                 self.posts.append(item)
 
             iter = iter + 1
@@ -859,14 +997,14 @@ class InstagramScraper(object):
         resp = self.get_json(BASE_URL + username)
 
         userinfo = None
-        
+
         if resp is not None:
             try:
                 if "window._sharedData = " in resp:
                     shared_data = resp.split("window._sharedData = ")[1].split(";</script>")[0]
                     if shared_data:
                         userinfo = self.deep_get(json.loads(shared_data), 'entry_data.ProfilePage[0].graphql.user')
-                
+
                 if "window.__additionalDataLoaded(" in resp and not userinfo:
                     parameters = resp.split("window.__additionalDataLoaded(")[1].split(");</script>")[0]
                     if parameters and "," in parameters:
@@ -875,7 +1013,7 @@ class InstagramScraper(object):
                             userinfo = self.deep_get(json.loads(shared_data), 'graphql.user')
             except (TypeError, KeyError, IndexError):
                 pass
-        
+
         return userinfo
 
     def __fetch_stories(self, url, fetching_highlights_metadata=False):
@@ -883,7 +1021,8 @@ class InstagramScraper(object):
 
         if resp is not None:
             retval = json.loads(resp)
-            if retval['data'] and 'reels_media' in retval['data'] and len(retval['data']['reels_media']) > 0 and len(retval['data']['reels_media'][0]['items']) > 0:
+            if retval['data'] and 'reels_media' in retval['data'] and len(retval['data']['reels_media']) > 0 and len(
+                    retval['data']['reels_media'][0]['items']) > 0:
                 items = []
 
                 for reel_media in retval['data']['reels_media']:
@@ -921,7 +1060,9 @@ class InstagramScraper(object):
                 stories = []
 
                 for ids_chunk in ids_chunks:
-                    stories.extend(self.__fetch_stories(HIGHLIGHT_STORIES_REEL_ID_URL.format('%22%2C%22'.join(str(x) for x in ids_chunk)), fetching_highlights_metadata=True))
+                    stories.extend(self.__fetch_stories(
+                        HIGHLIGHT_STORIES_REEL_ID_URL.format('%22%2C%22'.join(str(x) for x in ids_chunk)),
+                        fetching_highlights_metadata=True))
 
                 return stories
 
@@ -932,10 +1073,8 @@ class InstagramScraper(object):
         resp = self.get_json(BROADCAST_URL.format(user_id))
         del self.session.headers['Host']
 
-
         if resp is not None:
             retval = json.loads(resp)
-
 
             if 'post_live_item' not in retval:
                 return []
@@ -946,11 +1085,15 @@ class InstagramScraper(object):
                 dash_manifest = ET.fromstring(broadcast['dash_manifest'])
                 xmlns = '{urn:mpeg:dash:schema:mpd:2011}'
 
-                video_adaptation_set = dash_manifest.find('.//{0}Representation[@mimeType="video/mp4"]/..'.format(xmlns))
-                audio_adaptation_set = dash_manifest.find('.//{0}Representation[@mimeType="audio/mp4"]/..'.format(xmlns))
+                video_adaptation_set = dash_manifest.find(
+                    './/{0}Representation[@mimeType="video/mp4"]/..'.format(xmlns))
+                audio_adaptation_set = dash_manifest.find(
+                    './/{0}Representation[@mimeType="audio/mp4"]/..'.format(xmlns))
 
                 best_video_quality = (video_adaptation_set.get('maxWidth'), video_adaptation_set.get('maxHeight'))
-                video_element = video_adaptation_set.find('.//*[@width="{0}"][@height="{1}"]/{2}BaseURL'.format(best_video_quality[0], best_video_quality[1], xmlns))
+                video_element = video_adaptation_set.find(
+                    './/*[@width="{0}"][@height="{1}"]/{2}BaseURL'.format(best_video_quality[0], best_video_quality[1],
+                                                                          xmlns))
                 video_url = video_element.text
 
                 audio_element = audio_adaptation_set.find('.//{0}BaseURL'.format(xmlns))
@@ -1069,11 +1212,11 @@ class InstagramScraper(object):
     def get_original_image(self, url):
         """Gets the full-size image from the specified url."""
         # these path parts somehow prevent us from changing the rest of media url
-        #url = re.sub(r'/vp/[0-9A-Fa-f]{32}/[0-9A-Fa-f]{8}/', '/', url)
+        # url = re.sub(r'/vp/[0-9A-Fa-f]{32}/[0-9A-Fa-f]{8}/', '/', url)
         # remove dimensions to get largest image
-        #url = re.sub(r'/[sp]\d{3,}x\d{3,}/', '/', url)
+        # url = re.sub(r'/[sp]\d{3,}x\d{3,}/', '/', url)
         # get non-square image if one exists
-        #url = re.sub(r'/c\d{1,}.\d{1,}.\d{1,}.\d{1,}/', '/', url)
+        # url = re.sub(r'/c\d{1,}.\d{1,}.\d{1,}.\d{1,}/', '/', url)
         return url
 
     def set_story_url(self, item):
@@ -1095,7 +1238,7 @@ class InstagramScraper(object):
         files_path = []
 
         for full_url, base_name in self.templatefilename(item):
-            url = full_url.split('?')[0] #try the static url first, stripping parameters
+            url = full_url.split('?')[0]  # try the static url first, stripping parameters
 
             file_path = os.path.join(save_dir, base_name)
 
@@ -1119,28 +1262,31 @@ class InstagramScraper(object):
                                 downloaded_before = downloaded
                                 headers['Range'] = 'bytes={0}-'.format(downloaded_before)
 
-                                with self.session.get(url, cookies=self.cookies, headers=headers, stream=True, timeout=CONNECT_TIMEOUT) as response:
+                                with self.session.get(url, cookies=self.cookies, headers=headers, stream=True,
+                                                      timeout=CONNECT_TIMEOUT) as response:
                                     if response.status_code == 404 or response.status_code == 410:
-                                        #on 410 error see issue #343
-                                        #instagram don't lie on this
+                                        # on 410 error see issue #343
+                                        # instagram don't lie on this
                                         break
                                     if response.status_code == 403 and url != full_url:
-                                        #see issue #254
+                                        # see issue #254
                                         url = full_url
                                         continue
                                     response.raise_for_status()
 
                                     if response.status_code == 206:
                                         try:
-                                            match = re.match(r'bytes (?P<first>\d+)-(?P<last>\d+)/(?P<size>\d+)', response.headers['Content-Range'])
+                                            match = re.match(r'bytes (?P<first>\d+)-(?P<last>\d+)/(?P<size>\d+)',
+                                                             response.headers['Content-Range'])
                                             range_file_position = int(match.group('first'))
                                             if range_file_position != downloaded_before:
                                                 raise Exception()
                                             total_length = int(match.group('size'))
                                             media_file.truncate(total_length)
                                         except:
-                                            raise requests.exceptions.InvalidHeader('Invalid range response "{0}" for requested "{1}"'.format(
-                                                response.headers.get('Content-Range'), headers.get('Range')))
+                                            raise requests.exceptions.InvalidHeader(
+                                                'Invalid range response "{0}" for requested "{1}"'.format(
+                                                    response.headers.get('Content-Range'), headers.get('Range')))
                                     elif response.status_code == 200:
                                         if downloaded_before != 0:
                                             downloaded_before = 0
@@ -1148,14 +1294,16 @@ class InstagramScraper(object):
                                             media_file.seek(0)
                                         content_length = response.headers.get('Content-Length')
                                         if content_length is None:
-                                            self.logger.warning('No Content-Length in response, the file {0} may be partially downloaded'.format(base_name))
+                                            self.logger.warning(
+                                                'No Content-Length in response, the file {0} may be partially downloaded'.format(
+                                                    base_name))
                                         else:
                                             total_length = int(content_length)
                                             media_file.truncate(total_length)
                                     else:
                                         raise PartialContentException('Wrong status code {0}', response.status_code)
 
-                                    for chunk in response.iter_content(chunk_size=64*1024):
+                                    for chunk in response.iter_content(chunk_size=64 * 1024):
                                         if chunk:
                                             downloaded += len(chunk)
                                             media_file.write(chunk)
@@ -1163,7 +1311,8 @@ class InstagramScraper(object):
                                             return
 
                                 if downloaded != total_length and total_length is not None:
-                                    raise PartialContentException('Got first {0} bytes from {1}'.format(downloaded, total_length))
+                                    raise PartialContentException(
+                                        'Got first {0} bytes from {1}'.format(downloaded, total_length))
 
                                 break
 
@@ -1179,12 +1328,12 @@ class InstagramScraper(object):
                                 if downloaded - downloaded_before > 0:
                                     # if we got some data on this iteration do not count it as a failure
                                     self.logger.warning('Continue after exception {0} on {1}'.format(repr(e), media))
-                                    retry = 0 # the next fail will be first in a row with no data
+                                    retry = 0  # the next fail will be first in a row with no data
                                     continue
                                 if retry < MAX_RETRIES:
                                     self.logger.warning('Retry after exception {0} on {1}'.format(repr(e), media))
                                     self.sleep(retry_delay)
-                                    retry_delay = min( 2 * retry_delay, MAX_RETRY_DELAY )
+                                    retry_delay = min(2 * retry_delay, MAX_RETRY_DELAY)
                                     retry = retry + 1
                                     continue
                                 else:
@@ -1241,19 +1390,19 @@ class InstagramScraper(object):
             try:
                 template = self.template
                 template_values = {
-                                    'username' : item['username'],
-                                   'urlname': filename,
-                                    'shortcode': str(item['shortcode']),
-                                    'mediatype' : item['__typename'][5:],
-                                   'datetime': time.strftime('%Y%m%d %Hh%Mm%Ss',
-                                                             time.localtime(self.__get_timestamp(item))),
-                                   'date': time.strftime('%Y%m%d', time.localtime(self.__get_timestamp(item))),
-                                   'year': time.strftime('%Y', time.localtime(self.__get_timestamp(item))),
-                                   'month': time.strftime('%m', time.localtime(self.__get_timestamp(item))),
-                                   'day': time.strftime('%d', time.localtime(self.__get_timestamp(item))),
-                                   'h': time.strftime('%Hh', time.localtime(self.__get_timestamp(item))),
-                                   'm': time.strftime('%Mm', time.localtime(self.__get_timestamp(item))),
-                                   's': time.strftime('%Ss', time.localtime(self.__get_timestamp(item)))}
+                    'username': item['username'],
+                    'urlname': filename,
+                    'shortcode': str(item['shortcode']),
+                    'mediatype': item['__typename'][5:],
+                    'datetime': time.strftime('%Y%m%d %Hh%Mm%Ss',
+                                              time.localtime(self.__get_timestamp(item))),
+                    'date': time.strftime('%Y%m%d', time.localtime(self.__get_timestamp(item))),
+                    'year': time.strftime('%Y', time.localtime(self.__get_timestamp(item))),
+                    'month': time.strftime('%m', time.localtime(self.__get_timestamp(item))),
+                    'day': time.strftime('%d', time.localtime(self.__get_timestamp(item))),
+                    'h': time.strftime('%Hh', time.localtime(self.__get_timestamp(item))),
+                    'm': time.strftime('%Mm', time.localtime(self.__get_timestamp(item))),
+                    's': time.strftime('%Ss', time.localtime(self.__get_timestamp(item)))}
 
                 customfilename = str(template.format(**template_values) + extension)
                 yield url, customfilename
@@ -1336,7 +1485,7 @@ class InstagramScraper(object):
                 file_data_ids.pop(file_data_ids.index(id_))
             else:
                 unique_ids.add(id_)
-            
+
     @staticmethod
     def save_json(data, dst='./'):
         """Saves the data to a json file."""
@@ -1373,7 +1522,7 @@ class InstagramScraper(object):
         """Returns a logger."""
         logger = logging.getLogger(__name__)
 
-        dest +=  '/' if (dest !=  '') and dest[-1] != '/' else ''
+        dest += '/' if (dest != '') and dest[-1] != '/' else ''
         fh = logging.FileHandler(dest + 'instagram-scraper.log', 'w')
         fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         fh.setLevel(level)
@@ -1410,7 +1559,7 @@ class InstagramScraper(object):
         parse an ini like file with sections composed of headers, [locaiton],
         and arguments that are location ids
         """
-        locations={}
+        locations = {}
         with open(locations_file, 'r') as f_in:
             lines = filter(None, (line.rstrip() for line in f_in))
             for line in lines:
@@ -1419,7 +1568,7 @@ class InstagramScraper(object):
                     current_group = match.group(1)
                     locations.setdefault(current_group, [])
                 else:
-                    if  not line.strip().startswith("#"):
+                    if not line.strip().startswith("#"):
                         try:
                             locations[current_group].append(line.strip())
                         except NameError:
@@ -1474,7 +1623,6 @@ class InstagramScraper(object):
                 pickle.dump(self.session.cookies, f)
 
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="instagram-scraper scrapes and downloads an instagram user's photos and videos.",
@@ -1520,7 +1668,8 @@ def main():
     parser.add_argument('--login-pass', '--login_pass', '-p', default=None, help='Instagram login password')
     parser.add_argument('--followings-input', '--followings_input', action='store_true', default=False,
                         help='Compile list of profiles followed by login-user to use as input')
-    parser.add_argument('--followings-output', '--followings_output', help='Output followings-input to file in destination')
+    parser.add_argument('--followings-output', '--followings_output',
+                        help='Output followings-input to file in destination')
     parser.add_argument('--filename', '-f', help='Path to a file containing a list of users to scrape')
     parser.add_argument('--quiet', '-q', default=False, action='store_true', help='Be quiet while scraping')
     parser.add_argument('--maximum', '-m', type=int, default=0, help='Maximum number of items to scrape')
@@ -1530,10 +1679,12 @@ def main():
                         help='Save media metadata to json file')
     parser.add_argument('--profile-metadata', '--profile_metadata', action='store_true', default=False,
                         help='Save profile metadata to json file')
-    parser.add_argument('--proxies', default={}, help='Enable use of proxies, add a valid JSON with http or/and https urls.')
+    parser.add_argument('--proxies', default={},
+                        help='Enable use of proxies, add a valid JSON with http or/and https urls.')
     parser.add_argument('--include-location', '--include_location', action='store_true', default=False,
                         help='Include location data when saving media metadata')
-    parser.add_argument('--media-types', '--media_types', '-t', nargs='+', default=['image', 'video', 'story', 'broadcast'],
+    parser.add_argument('--media-types', '--media_types', '-t', nargs='+',
+                        default=['image', 'video', 'story', 'broadcast'],
                         help='Specify media types to scrape')
     parser.add_argument('--latest', action='store_true', default=False, help='Scrape new media since the last scrape')
     parser.add_argument('--latest-stamps', '--latest_stamps', default=None,
@@ -1542,19 +1693,23 @@ def main():
                         help='File in which to store cookies so that they can be reused between runs.')
     parser.add_argument('--tag', action='store_true', default=False, help='Scrape media using a hashtag')
     parser.add_argument('--filter', default=None, help='Filter by tags in user posts', nargs='*')
-    parser.add_argument('--filter-location', default=None, nargs="*", help="filter query by only accepting media with location filter as the location id")
-    parser.add_argument('--filter-location-file', default=None, type=str, help="file containing list of locations to filter query by")
+    parser.add_argument('--filter-location', default=None, nargs="*",
+                        help="filter query by only accepting media with location filter as the location id")
+    parser.add_argument('--filter-location-file', default=None, type=str,
+                        help="file containing list of locations to filter query by")
     parser.add_argument('--location', action='store_true', default=False, help='Scrape media using a location-id')
     parser.add_argument('--search-location', action='store_true', default=False, help='Search for locations by name')
     parser.add_argument('--comments', action='store_true', default=False, help='Save post comments to json file')
-    parser.add_argument('--no-check-certificate', action='store_true', default=False, help='Do not use ssl on transaction')
+    parser.add_argument('--no-check-certificate', action='store_true', default=False,
+                        help='Do not use ssl on transaction')
     parser.add_argument('--interactive', '-i', action='store_true', default=False,
                         help='Enable interactive login challenge solving')
     parser.add_argument('--retry-forever', action='store_true', default=False,
                         help='Retry download attempts endlessly when errors are received')
     parser.add_argument('--verbose', '-v', type=int, default=0, help='Logging verbosity level')
     parser.add_argument('--template', '-T', type=str, default='{urlname}', help='Customize filename template')
-    parser.add_argument('--log_destination', '-l', type=str, default='', help='destination folder for the instagram-scraper.log file')
+    parser.add_argument('--log_destination', '-l', type=str, default='',
+                        help='destination folder for the instagram-scraper.log file')
 
     args = parser.parse_args()
 
@@ -1564,10 +1719,13 @@ def main():
 
     if not args.username and args.filename is None and not args.followings_input:
         parser.print_help()
-        raise ValueError('Must provide username(s) OR a file containing a list of username(s) OR pass --followings-input')
-    elif (args.username and args.filename) or (args.username and args.followings_input) or (args.filename and args.followings_input):
+        raise ValueError(
+            'Must provide username(s) OR a file containing a list of username(s) OR pass --followings-input')
+    elif (args.username and args.filename) or (args.username and args.followings_input) or (
+            args.filename and args.followings_input):
         parser.print_help()
-        raise ValueError('Must provide only one of the following: username(s) OR a filename containing username(s) OR --followings-input')
+        raise ValueError(
+            'Must provide only one of the following: username(s) OR a filename containing username(s) OR --followings-input')
 
     if args.tag and args.location:
         parser.print_help()
@@ -1611,7 +1769,7 @@ def main():
     if args.followings_input:
         scraper.usernames = list(scraper.query_followings_gen(scraper.login_user))
         if args.followings_output:
-            with open(scraper.destination+scraper.followings_output, 'w') as file:
+            with open(scraper.destination + scraper.followings_output, 'w') as file:
                 for username in scraper.usernames:
                     file.write(username + "\n")
             # If not requesting anything else, exit
