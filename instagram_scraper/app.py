@@ -103,7 +103,7 @@ class SeleniumInstagramScraper:
         self.comments = []
         chrome_options = webdriver.ChromeOptions()
         chrome_options.add_argument("--headless --window-size=1920,1080")
-        self.chrome = webdriver.Chrome(executable_path='D:/chromedriver.exe', chrome_options=chrome_options)
+        self.chrome = webdriver.Chrome(executable_path='.\\chromedriver.exe', chrome_options=chrome_options)
 
     def scrape_comments(self):
         browser = self.chrome.get(self.post_url)
